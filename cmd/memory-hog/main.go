@@ -21,8 +21,8 @@ const pageSize = 4096
 
 func main() {
 	var (
-		totalMB = flag.Int("total-mb", 1024, "Total anonymous memory to allocate and touch (MiB).")
-		hotMB   = flag.Int("hot-mb", 64, "Fraction of memory to keep hot by re-touching (MiB).")
+		totalMB  = flag.Int("total-mb", 1024, "Total anonymous memory to allocate and touch (MiB).")
+		hotMB    = flag.Int("hot-mb", 64, "Fraction of memory to keep hot by re-touching (MiB).")
 		interval = flag.Duration("touch-interval", 100*time.Millisecond, "How often to re-touch the hot region.")
 	)
 	flag.Parse()

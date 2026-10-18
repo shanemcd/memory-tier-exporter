@@ -26,7 +26,7 @@ func movementDesc(prefix string) *prometheus.Desc {
 }
 
 var (
-	pgDemoteDesc = movementDesc("pgdemote")
+	pgDemoteDesc  = movementDesc("pgdemote")
 	pgPromoteDesc = movementDesc("pgpromote")
 )
 

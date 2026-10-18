@@ -10,50 +10,51 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// vmMetricLabels are the labels on per-VM tier-attribution metrics.
-// vmi and namespace identify the VirtualMachineInstance whose launcher pod's
-// cgroup is being measured; the launcher's own overhead (QEMU, libvirt
-// process, sidecars) is included in these numbers.
-var vmMetricLabels = []string{"node", "vmi", "namespace", "numa_node", "tier", "rank"}
+// workloadMetricLabels are the labels on per-workload tier-attribution
+// metrics. workload, workload_kind, namespace and pod identify the attributed
+// workload and the Kubernetes pod whose cgroup is measured. The pod cgroup
+// includes every container in the pod, so for KubeVirt VMs the launcher
+// overhead (QEMU, libvirt process, sidecars) is included in these numbers.
+var workloadMetricLabels = []string{"node", "workload", "workload_kind", "namespace", "pod", "numa_node", "tier", "rank"}
 
-type vmMemKind int
+type workloadMemKind int
 
 const (
-	vmAnon vmMemKind = iota
-	vmFile
-	vmShmem
+	wlAnon workloadMemKind = iota
+	wlFile
+	wlShmem
 )
 
-func (k vmMemKind) name() string {
+func (k workloadMemKind) name() string {
 	switch k {
-	case vmAnon:
+	case wlAnon:
 		return "anon"
-	case vmFile:
+	case wlFile:
 		return "file"
 	default:
 		return "shmem"
 	}
 }
 
-func vmMemDesc(kind vmMemKind) *prometheus.Desc {
+func workloadMemDesc(kind workloadMemKind) *prometheus.Desc {
 	return prometheus.NewDesc(
-		"node_memory_tier_vm_"+kind.name()+"_bytes",
-		fmt.Sprintf("%s memory of the VM's launcher pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes launcher overhead).", kind.name()),
-		vmMetricLabels, nil,
+		"node_memory_tier_workload_"+kind.name()+"_bytes",
+		fmt.Sprintf("%s memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).", kind.name()),
+		workloadMetricLabels, nil,
 	)
 }
 
-var vmPgDemoteDesc = prometheus.NewDesc(
-	"node_memory_tier_vm_pgdemote_total",
-	"Cumulative pages demoted from this VM's launcher pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgdemote_* rows), by reclaim path.",
-	append([]string{"node", "vmi", "namespace", "mode"}, "numa_node", "tier", "rank"),
+var workloadPgDemoteDesc = prometheus.NewDesc(
+	"node_memory_tier_workload_pgdemote_total",
+	"Cumulative pages demoted from this workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgdemote_* rows), by reclaim path.",
+	append([]string{"node", "workload", "workload_kind", "namespace", "pod", "mode"}, "numa_node", "tier", "rank"),
 	nil,
 )
 
-var vmPgPromoteDesc = prometheus.NewDesc(
-	"node_memory_tier_vm_pgpromote_total",
-	"Cumulative pages promoted toward a faster tier from this VM's launcher pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgpromote_* rows), by outcome.",
-	append([]string{"node", "vmi", "namespace", "mode"}, "numa_node", "tier", "rank"),
+var workloadPgPromoteDesc = prometheus.NewDesc(
+	"node_memory_tier_workload_pgpromote_total",
+	"Cumulative pages promoted toward a faster tier from this workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgpromote_* rows), by outcome.",
+	append([]string{"node", "workload", "workload_kind", "namespace", "pod", "mode"}, "numa_node", "tier", "rank"),
 	nil,
 )
 
@@ -125,16 +126,20 @@ func podCgroupPath(cgroupfsRoot, uid, qosClass string) string {
 	return ""
 }
 
-// collectVMs attributes per-VM memory by NUMA node for launcher pods on this
-// node. Failures of individual pods are skipped (a pod that vanished between
-// list and read, or a cgroup layout we do not understand).
-func (c *Collector) collectVMs(ch chan<- prometheus.Metric, tm TierMap, ranks map[int]int) error {
+// collectWorkloads attributes per-workload memory by NUMA node for workload
+// pods on this node. Failures of individual pods are skipped (a pod that
+// vanished between list and read, or a cgroup layout we do not understand).
+func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ranks map[int]int) error {
 	if c.opts.PodLister == nil {
 		return nil
 	}
-	pods, err := c.opts.PodLister.LauncherPods()
+	pods, err := c.opts.PodLister.Pods()
 	if err != nil {
 		return err
+	}
+	kind := c.opts.WorkloadKind
+	if kind == "" {
+		kind = "pod"
 	}
 	for _, pod := range pods {
 		if pod.NodeName != "" && pod.NodeName != c.opts.NodeName {
@@ -148,9 +153,9 @@ func (c *Collector) collectVMs(ch chan<- prometheus.Metric, tm TierMap, ranks ma
 		if err != nil {
 			continue
 		}
-		vmiName := pod.VMIName
-		if vmiName == "" {
-			vmiName = strings.TrimPrefix(strings.TrimPrefix(pod.Name, "virt-launcher-"), "")
+		workload := pod.WorkloadName
+		if workload == "" {
+			workload = pod.Name
 		}
 		emit := func(row string, desc *prometheus.Desc) {
 			nodes, ok := stat[row]
@@ -160,33 +165,33 @@ func (c *Collector) collectVMs(ch chan<- prometheus.Metric, tm TierMap, ranks ma
 			for n, v := range nodes {
 				tier, rank := c.nodeTierInfo(tm, ranks, n)
 				labels := []string{
-					c.opts.NodeName, vmiName, pod.Namespace,
+					c.opts.NodeName, workload, kind, pod.Namespace, pod.Name,
 					strconv.Itoa(n), strconv.Itoa(tier), strconv.Itoa(rank),
 				}
 				ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(v), labels...)
 			}
 		}
-		emit("anon", vmMemDesc(vmAnon))
-		emit("file", vmMemDesc(vmFile))
-		emit("shmem", vmMemDesc(vmShmem))
+		emit("anon", workloadMemDesc(wlAnon))
+		emit("file", workloadMemDesc(wlFile))
+		emit("shmem", workloadMemDesc(wlShmem))
 
-		// Per-VM movement rows ("pgdemote_kswapd N0=0 N1=0", "pgpromote_success N0=8", ...).
+		// Per-workload movement rows ("pgdemote_kswapd N0=0 N1=0", "pgpromote_success N0=8", ...).
 		for row, nodes := range stat {
 			var mode string
-			desc := vmPgDemoteDesc
+			desc := workloadPgDemoteDesc
 			switch {
 			case strings.HasPrefix(row, "pgdemote_"):
 				mode = strings.TrimPrefix(row, "pgdemote_")
 			case strings.HasPrefix(row, "pgpromote_"):
 				mode = strings.TrimPrefix(row, "pgpromote_")
-				desc = vmPgPromoteDesc
+				desc = workloadPgPromoteDesc
 			default:
 				continue
 			}
 			for n, v := range nodes {
 				tier, rank := c.nodeTierInfo(tm, ranks, n)
 				labels := []string{
-					c.opts.NodeName, vmiName, pod.Namespace, mode,
+					c.opts.NodeName, workload, kind, pod.Namespace, pod.Name, mode,
 					strconv.Itoa(n), strconv.Itoa(tier), strconv.Itoa(rank),
 				}
 				ch <- prometheus.MustNewConstMetric(desc, prometheus.CounterValue, float64(v), labels...)

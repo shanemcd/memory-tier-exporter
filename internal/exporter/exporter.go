@@ -8,9 +8,11 @@
 //   - per-NUMA-node memory usage (/sys/devices/system/node/nodeN/meminfo),
 //   - page demotion and promotion counters (/proc/vmstat),
 //   - memory pressure stall information (/proc/pressure/memory),
-//   - and, when running in a Kubernetes cluster with KubeVirt, per-VM memory
-//     attribution by NUMA node (cgroup v2 memory.numa_stat of each VM's
-//     launcher pod).
+//   - and, when running in a Kubernetes cluster, per-workload memory
+//     attribution by NUMA node (cgroup v2 memory.numa_stat of each
+//     workload pod's cgroup). The default configuration attributes KubeVirt
+//     virtual machines; any pod set can be attributed by configuring pod
+//     discovery.
 //
 // All metrics use the node_memory_tier_ prefix so they cannot be confused
 // with (or double-counted against) node_exporter's own collectors, none of
@@ -36,25 +38,32 @@ type Options struct {
 	ProcfsRoot   string
 	CgroupfsRoot string
 
-	// PodLister, when non-nil, enables per-VM attribution: it returns the
-	// launcher pods running on this node.
+	// PodLister, when non-nil, enables per-workload attribution: it returns
+	// the pods backing attributed workloads.
 	PodLister PodLister
+
+	// WorkloadKind is the value of the workload_kind label on per-workload
+	// series. It should describe what the configured PodLister selects (the
+	// KubeVirt preset uses "vmi"). Empty defaults to "pod".
+	WorkloadKind string
 }
 
 // Pod is the minimal view of a Kubernetes pod the collector needs.
 type Pod struct {
-	Namespace string
-	Name      string // launcher pod name (virt-launcher-<vmi>-<suffix>)
-	UID       string // pod UID, used to locate the cgroup
-	QOSClass  string // Guaranteed | Burstable | BestEffort
-	VMIName   string // VMI name, from the vmi.kubevirt.io/id label
-	NodeName  string // node the pod is scheduled on
+	Namespace    string
+	Name         string // pod name
+	UID          string // pod UID, used to locate the cgroup
+	QOSClass     string // Guaranteed | Burstable | BestEffort
+	WorkloadName string // workload name, from the configured name label
+	NodeName     string // node the pod is scheduled on
 }
 
-// PodLister returns launcher pods. Implementations typically list pods with
-// the kubevirt.io=virt-launcher label and filter by node.
+// PodLister returns the pods whose cgroups are attributed per workload.
+// Implementations typically list pods by a label selector and filter by
+// node; the KubeVirt preset lists kubevirt.io=virt-launcher pods and names
+// workloads with the vmi.kubevirt.io/id label.
 type PodLister interface {
-	LauncherPods() ([]Pod, error)
+	Pods() ([]Pod, error)
 }
 
 // Collector implements prometheus.Collector.
@@ -118,12 +127,12 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- pgPromoteDesc
 	ch <- psiStalledDesc
 	ch <- psiAvgDesc
-	ch <- vmMemDesc(vmAnon)
-	ch <- vmMemDesc(vmFile)
-	ch <- vmMemDesc(vmShmem)
-	ch <- vmPgDemoteDesc
-	ch <- vmPgPromoteDesc
-	ch <- vmAttributionErrorsDesc
+	ch <- workloadMemDesc(wlAnon)
+	ch <- workloadMemDesc(wlFile)
+	ch <- workloadMemDesc(wlShmem)
+	ch <- workloadPgDemoteDesc
+	ch <- workloadPgPromoteDesc
+	ch <- workloadAttributionErrorsDesc
 }
 
 // Collect implements prometheus.Collector.

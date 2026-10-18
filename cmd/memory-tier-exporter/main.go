@@ -1,6 +1,6 @@
 // memory-tier-exporter exposes Linux memory-tier state (DRAM vs CXL vs swap
-// tiers, page demotion and promotion, memory pressure, and per-VM tier
-// attribution) as Prometheus metrics.
+// tiers, page demotion and promotion, memory pressure, and per-workload
+// tier attribution) as Prometheus metrics.
 package main
 
 import (
@@ -14,8 +14,8 @@ import (
 	"syscall"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/shanemcd/memory-tier-exporter/internal/exporter"
 	"github.com/shanemcd/memory-tier-exporter/internal/kube"
@@ -29,31 +29,37 @@ func main() {
 			"Path under which to expose metrics.")
 		nodeName = flag.String("node-name", envOr("NODE_NAME", ""),
 			"Kubernetes node name to attach to all series (defaults to $NODE_NAME, then hostname).")
+		podLabelSelector = flag.String("pod-label-selector", kube.DefaultPodLabelSelector,
+			"Label selector choosing the pods whose cgroups are attributed per workload.")
+		workloadNameLabel = flag.String("workload-name-label", kube.DefaultWorkloadNameLabel,
+			"Pod label whose value names the workload (empty: the pod name is used).")
+		workloadKind = flag.String("workload-kind", kube.DefaultWorkloadKind,
+			"Value of the workload_kind label on per-workload series (must describe what -pod-label-selector selects).")
 		sysfsRoot = flag.String("sysfs.root", "/sys",
 			"Sysfs mount point (testing).")
 		procfsRoot = flag.String("procfs.root", "/proc",
 			"Procfs mount point (testing).")
 		cgroupfsRoot = flag.String("cgroupfs.root", "/sys/fs/cgroup",
 			"Cgroup v2 mount point (testing).")
-		disableVM = flag.Bool("no-vm-attribution", false,
-			"Disable per-VM attribution (node-level tier metrics only).")
+		disableWorkload = flag.Bool("no-workload-attribution", false,
+			"Disable per-workload attribution (node-level tier metrics only).")
 	)
 	flag.Parse()
-
-	var podLister exporter.PodLister
-	if !*disableVM {
-		pl, err := kube.NewInClusterPodLister()
-		if err != nil {
-			log.Printf("VM attribution disabled (no in-cluster Kubernetes configuration: %v)", err)
-		} else {
-			podLister = pl
-		}
-	}
 
 	node := *nodeName
 	if node == "" {
 		if hn, err := os.Hostname(); err == nil {
 			node = hn
+		}
+	}
+
+	var podLister exporter.PodLister
+	if !*disableWorkload {
+		pl, err := kube.NewInClusterPodLister(*podLabelSelector, *workloadNameLabel, node)
+		if err != nil {
+			log.Printf("workload attribution disabled (no in-cluster Kubernetes configuration: %v)", err)
+		} else {
+			podLister = pl
 		}
 	}
 
@@ -64,6 +70,7 @@ func main() {
 			SysfsRoot:    *sysfsRoot,
 			ProcfsRoot:   *procfsRoot,
 			CgroupfsRoot: *cgroupfsRoot,
+			WorkloadKind: *workloadKind,
 			PodLister:    podLister,
 		}),
 		versioncollector.NewCollector("memory_tier_exporter"),

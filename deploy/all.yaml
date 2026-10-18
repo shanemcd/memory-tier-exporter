@@ -4,9 +4,9 @@
 # The exporter needs:
 #   - read access to /sys and /proc of the node (hostPath, read-only)
 #   - read access to the cgroup filesystem (hostPath, read-only) for
-#     per-VM attribution
-#   - list access to pods cluster-wide (virt-launcher pods) for per-VM
-#     attribution
+#     per-workload attribution
+#   - list access to pods (label-selected workload pods; defaults to
+#     KubeVirt launcher pods) for per-workload attribution
 #
 # Apply with: oc apply -f deploy/
 ---
@@ -65,7 +65,8 @@ spec:
         app: memory-tier-exporter
     spec:
       serviceAccountName: memory-tier-exporter
-      # VM attribution requires cgroup access; sysfs/procfs reads are passive.
+      # Workload attribution requires cgroup access; sysfs/procfs reads are
+      # passive.
       securityContext:
         runAsNonRoot: true
       containers:
@@ -77,6 +78,12 @@ spec:
             - --sysfs.root=/sys
             - --procfs.root=/host/proc
             - --cgroupfs.root=/host/sys/fs/cgroup
+            # Per-workload attribution defaults to the KubeVirt preset
+            # (kubevirt.io=virt-launcher pods named by vmi.kubevirt.io/id).
+            # To attribute other pods, set:
+            #   - --pod-label-selector=<selector>
+            #   - --workload-name-label=<pod label, or empty for pod names>
+            #   - --workload-kind=<kind shown on the workload_kind label>
           env:
             - name: NODE_NAME
               valueFrom:
