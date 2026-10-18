@@ -30,11 +30,7 @@ func main() {
 		nodeName = flag.String("node-name", envOr("NODE_NAME", ""),
 			"Kubernetes node name to attach to all series (defaults to $NODE_NAME, then hostname).")
 		podLabelSelector = flag.String("pod-label-selector", kube.DefaultPodLabelSelector,
-			"Label selector choosing the pods whose cgroups are attributed per workload.")
-		workloadNameLabel = flag.String("workload-name-label", kube.DefaultWorkloadNameLabel,
-			"Pod label whose value names the workload (empty: the pod name is used).")
-		workloadKind = flag.String("workload-kind", kube.DefaultWorkloadKind,
-			"Value of the workload_kind label on per-workload series (must describe what -pod-label-selector selects).")
+			"Label selector choosing the pods whose cgroups are attributed per workload (empty: all pods).")
 		sysfsRoot = flag.String("sysfs.root", "/sys",
 			"Sysfs mount point (testing).")
 		procfsRoot = flag.String("procfs.root", "/proc",
@@ -55,7 +51,7 @@ func main() {
 
 	var podLister exporter.PodLister
 	if !*disableWorkload {
-		pl, err := kube.NewInClusterPodLister(*podLabelSelector, *workloadNameLabel, node)
+		pl, err := kube.NewInClusterPodLister(*podLabelSelector, node)
 		if err != nil {
 			log.Printf("workload attribution disabled (no in-cluster Kubernetes configuration: %v)", err)
 		} else {
@@ -70,7 +66,6 @@ func main() {
 			SysfsRoot:    *sysfsRoot,
 			ProcfsRoot:   *procfsRoot,
 			CgroupfsRoot: *cgroupfsRoot,
-			WorkloadKind: *workloadKind,
 			PodLister:    podLister,
 		}),
 		versioncollector.NewCollector("memory_tier_exporter"),

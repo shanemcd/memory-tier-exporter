@@ -3,8 +3,9 @@
 A Prometheus exporter for Linux memory-tier state: which NUMA nodes hold DRAM
 versus slower tiers (such as CXL memory), how much memory each tier carries,
 how fast pages are moving between tiers, memory pressure, and — on Kubernetes
-clusters — how much of each attributed workload's memory resides on each tier
-(KubeVirt virtual machines by default; any labeled pod set via flags).
+clusters — how much of each pod's memory resides on each tier (workloads are
+identified by their controlling owner, so KubeVirt VMs, StatefulSets,
+DaemonSets and plain pods all attribute with no configuration).
 
 ## Why
 
@@ -42,30 +43,34 @@ memory visibility.
 ## Per-workload attribution
 
 On Kubernetes, the exporter attributes per-workload memory by reading the
-cgroup v2 `memory.numa_stat` of the selected pods' cgroups. Pod discovery is
-configured with three flags:
+cgroup v2 `memory.numa_stat` of pods' cgroups. This is intentionally fully
+generic — VMs are just pods:
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--pod-label-selector` | `kubevirt.io=virt-launcher` | Label selector choosing the pods whose cgroups are attributed |
-| `--workload-name-label` | `vmi.kubevirt.io/id` | Pod label whose value names the workload (empty: the pod name) |
-| `--workload-kind` | `vmi` | Value of the `workload_kind` label on per-workload series |
+- **Discovery** is a single flag, `--pod-label-selector` (default empty:
+  every pod on the node). Restrict it, e.g.
+  `--pod-label-selector=kubevirt.io=virt-launcher`, to attribute a subset.
+- **Workload identity** is derived from each pod's *controlling owner*
+  (`ownerReference` with `controller=true`): the `workload` label is the
+  owner's name and `workload_kind` its kind (matching
+  `kube-state-metrics`' `kube_pod_owner`), falling back to the pod's own
+  name and `Pod` for ownerless pods.
 
-The defaults implement the KubeVirt preset: each VM's launcher pod is
-selected, the workload is named after the VirtualMachineInstance, and series
-carry `workload_kind="vmi"` — so `workload` joins directly against KubeVirt's
-own `kubevirt_vmi_*` metrics. To attribute other pods instead, for example a
-StatefulSet's pods named by their app label:
+Owner-based identity is what makes the series useful without any
+KubeVirt-specific configuration:
 
-```yaml
-args:
-  - --pod-label-selector=app.kubernetes.io/name=my-app
-  - --workload-name-label=app.kubernetes.io/instance
-  - --workload-kind=pod
-```
+- a KubeVirt VM's launcher pod is owned by its VirtualMachineInstance, so
+  series carry `workload="<vmi-name>", workload_kind="VirtualMachineInstance"`
+  — which joins directly against KubeVirt's own `kubevirt_vmi_*` metrics —
+  and identity survives launcher-pod restarts. During a live migration both
+  launcher pods share the VMI owner, so the VM's pages on the source and
+  destination node aggregate under one workload.
+- a StatefulSet's or DaemonSet's pods are owned by the StatefulSet/DaemonSet.
+- a Deployment's pods are owned by their ReplicaSet, so `workload` is
+  revision-scoped (it changes on each rollout); join through
+  `kube_replicaset_owner` if you need the Deployment name.
 
-Attributed memory includes every container in the selected pod (for KubeVirt
-VMs: QEMU, the libvirt process and sidecars). Disable attribution entirely
+Attributed memory includes every container in the pod (for VM launcher
+pods: QEMU, the libvirt process and sidecars). Disable attribution entirely
 with `--no-workload-attribution` for a pure node-level exporter.
 
 ## Deployment (OpenShift)

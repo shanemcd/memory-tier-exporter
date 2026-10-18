@@ -78,12 +78,10 @@ spec:
             - --sysfs.root=/sys
             - --procfs.root=/host/proc
             - --cgroupfs.root=/host/sys/fs/cgroup
-            # Per-workload attribution defaults to the KubeVirt preset
-            # (kubevirt.io=virt-launcher pods named by vmi.kubevirt.io/id).
-            # To attribute other pods, set:
-            #   - --pod-label-selector=<selector>
-            #   - --workload-name-label=<pod label, or empty for pod names>
-            #   - --workload-kind=<kind shown on the workload_kind label>
+            # Per-workload attribution covers every pod on the node by
+            # default; workloads are identified by their controlling owner
+            # (for KubeVirt VMs: the VirtualMachineInstance). Restrict it
+            # with --pod-label-selector=<selector> if needed.
           env:
             - name: NODE_NAME
               valueFrom:

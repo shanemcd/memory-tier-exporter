@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -11,29 +12,23 @@ import (
 	"github.com/shanemcd/memory-tier-exporter/internal/exporter"
 )
 
-// Default pod-discovery settings implement the KubeVirt preset: attribute
-// KubeVirt virtual machines by selecting their launcher pods and naming each
-// workload with the VMI name carried on the pod's labels.
-const (
-	DefaultPodLabelSelector  = "kubevirt.io=virt-launcher"
-	DefaultWorkloadNameLabel = "vmi.kubevirt.io/id"
-	DefaultWorkloadKind      = "vmi"
-)
+// DefaultPodLabelSelector is the default pod-discovery setting: an empty
+// selector attributes every pod on the node. Restrict it (for example to
+// kubevirt.io=virt-launcher) to attribute only a subset of pods.
+const DefaultPodLabelSelector = ""
 
-// PodLister lists the pods backing attributed workloads. LabelSelector
-// selects the pods; WorkloadNameLabel is the pod label whose value names the
-// workload (empty: the pod name is used); NodeName, when set, restricts the
-// listing to that node server-side.
+// PodLister lists the pods whose cgroups are attributed per workload.
+// LabelSelector selects the pods (empty: all pods); NodeName, when set,
+// restricts the listing to that node server-side.
 type PodLister struct {
-	Client            kubernetes.Interface
-	LabelSelector     string
-	WorkloadNameLabel string
-	NodeName          string
+	Client        kubernetes.Interface
+	LabelSelector string
+	NodeName      string
 }
 
 // NewInClusterPodLister builds a lister from the in-cluster service-account
 // configuration.
-func NewInClusterPodLister(labelSelector, workloadNameLabel, nodeName string) (*PodLister, error) {
+func NewInClusterPodLister(labelSelector, nodeName string) (*PodLister, error) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
 		return nil, err
@@ -42,12 +37,7 @@ func NewInClusterPodLister(labelSelector, workloadNameLabel, nodeName string) (*
 	if err != nil {
 		return nil, err
 	}
-	return &PodLister{
-		Client:            client,
-		LabelSelector:     labelSelector,
-		WorkloadNameLabel: workloadNameLabel,
-		NodeName:          nodeName,
-	}, nil
+	return &PodLister{Client: client, LabelSelector: labelSelector, NodeName: nodeName}, nil
 }
 
 // Pods implements exporter.PodLister.
@@ -61,20 +51,39 @@ func (p *PodLister) Pods() ([]exporter.Pod, error) {
 		return nil, fmt.Errorf("listing workload pods: %w", err)
 	}
 	out := make([]exporter.Pod, 0, len(pods.Items))
-	for _, pod := range pods.Items {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
 		if pod.Spec.NodeName == "" {
 			continue
 		}
-		out = append(out, exporter.Pod{
-			Namespace:    pod.Namespace,
-			Name:         pod.Name,
-			UID:          string(pod.UID),
-			QOSClass:     string(pod.Status.QOSClass),
-			WorkloadName: pod.Labels[p.WorkloadNameLabel],
-			NodeName:     pod.Spec.NodeName,
-		})
+		ep := exporter.Pod{
+			Namespace: pod.Namespace,
+			Name:      pod.Name,
+			UID:       string(pod.UID),
+			QOSClass:  string(pod.Status.QOSClass),
+			NodeName:  pod.Spec.NodeName,
+		}
+		if owner := controllingOwner(pod); owner != nil {
+			ep.OwnerKind, ep.OwnerName = owner.Kind, owner.Name
+		}
+		out = append(out, ep)
 	}
 	return out, nil
+}
+
+// controllingOwner returns the pod's controlling ownerReference, if any.
+// Every well-behaved controller (a KubeVirt VirtualMachineInstance, a
+// StatefulSet, DaemonSet, ReplicaSet, Job, ...) sets one; it is what gives
+// the workload a stable identity that survives pod restarts and, for VMs,
+// spans both launcher pods during a live migration.
+func controllingOwner(pod *corev1.Pod) *metav1.OwnerReference {
+	for i := range pod.OwnerReferences {
+		ref := &pod.OwnerReferences[i]
+		if ref.Controller != nil && *ref.Controller {
+			return ref
+		}
+	}
+	return nil
 }
 
 var _ exporter.PodLister = (*PodLister)(nil)

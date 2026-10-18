@@ -21,7 +21,6 @@ func newTestCollector(lister PodLister) *Collector {
 		SysfsRoot:    testdata + "/sys",
 		ProcfsRoot:   testdata + "/proc",
 		CgroupfsRoot: testdata + "/cgroup",
-		WorkloadKind: "vmi",
 		PodLister:    lister,
 	})
 }
@@ -93,14 +92,26 @@ func TestParseNumaStat(t *testing.T) {
 // TestCollectorEndToEnd scrapes the collector against fixtures and checks the
 // exposed series.
 func TestCollectorEndToEnd(t *testing.T) {
-	lister := &fakeLister{pods: []Pod{{
-		Namespace:    "default",
-		Name:         "virt-launcher-demo-abcde",
-		UID:          "11111111-2222-3333-4444-555555555555",
-		QOSClass:     "Burstable",
-		WorkloadName: "demo",
-		NodeName:     "worker-test",
-	}}}
+	lister := &fakeLister{pods: []Pod{
+		{
+			// KubeVirt launcher pod: controlling owner is the VMI.
+			Namespace: "default",
+			Name:      "virt-launcher-demo-abcde",
+			UID:       "11111111-2222-3333-4444-555555555555",
+			QOSClass:  "Burstable",
+			NodeName:  "worker-test",
+			OwnerKind: "VirtualMachineInstance", OwnerName: "demo",
+		},
+		{
+			// Ownerless pod: workload identity falls back to the pod itself.
+			// Shares the fixture cgroup (same UID) as the launcher pod.
+			Namespace: "default",
+			Name:      "standalone-7d9f",
+			UID:       "11111111-2222-3333-4444-555555555555",
+			QOSClass:  "Burstable",
+			NodeName:  "worker-test",
+		},
+	}}
 	c := newTestCollector(lister)
 
 	reg := prometheus.NewPedanticRegistry()
@@ -159,26 +170,38 @@ node_memory_tier_psi_stalled_ratio{node="worker-test",scope="some",window="300"}
 node_memory_tier_psi_stalled_ratio{node="worker-test",scope="some",window="60"} 0.0003
 # HELP node_memory_tier_workload_anon_bytes anon memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
 # TYPE node_memory_tier_workload_anon_bytes gauge
-node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 1.6082944e+08
-node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 4096
+node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 1.6082944e+08
+node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 1.6082944e+08
+node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 4096
+node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 4096
 # HELP node_memory_tier_workload_pgdemote_total Cumulative pages demoted from this workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgdemote_* rows), by reclaim path.
 # TYPE node_memory_tier_workload_pgdemote_total counter
-node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 64
-node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 0
-node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 0
-node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 0
+node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 64
+node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 64
+node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_pgdemote_total{mode="direct",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
+node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 0
+node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_pgdemote_total{mode="kswapd",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
 # HELP node_memory_tier_workload_pgpromote_total Cumulative pages promoted toward a faster tier from this workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat pgpromote_* rows), by outcome.
 # TYPE node_memory_tier_workload_pgpromote_total counter
-node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 8
-node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 0
+node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 8
+node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 8
+node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
 # HELP node_memory_tier_workload_file_bytes file memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
 # TYPE node_memory_tier_workload_file_bytes gauge
-node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 598016
-node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 0
+node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 598016
+node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 598016
+node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
 # HELP node_memory_tier_workload_shmem_bytes shmem memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
 # TYPE node_memory_tier_workload_shmem_bytes gauge
-node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="vmi"} 81920
-node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="vmi"} 0
+node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 81920
+node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 81920
+node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
+node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
 `
 	if err := testutil.GatherAndCompare(dropScrapeMetrics{reg}, strings.NewReader(expected)); err != nil {
 		t.Errorf("end-to-end comparison failed:\n%v", err)
@@ -188,7 +211,7 @@ node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",num
 	lister2 := &fakeLister{pods: []Pod{{
 		Namespace: "default", Name: "virt-launcher-other-abcde",
 		UID: "11111111-2222-3333-4444-555555555555", QOSClass: "Burstable",
-		WorkloadName: "other", NodeName: "worker-other",
+		OwnerKind: "VirtualMachineInstance", OwnerName: "other", NodeName: "worker-other",
 	}}}
 	c2 := newTestCollector(lister2)
 	count := testutil.CollectAndCount(c2, "node_memory_tier_workload_anon_bytes")

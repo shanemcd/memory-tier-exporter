@@ -126,9 +126,13 @@ func podCgroupPath(cgroupfsRoot, uid, qosClass string) string {
 	return ""
 }
 
-// collectWorkloads attributes per-workload memory by NUMA node for workload
+// collectWorkloads attributes per-workload memory by NUMA node for
 // pods on this node. Failures of individual pods are skipped (a pod that
-// vanished between list and read, or a cgroup layout we do not understand).
+// vanished between list and read, or a cgroup layout we do not
+// understand). The workload identity is the pod's controlling owner —
+// stable across pod restarts, and shared by both launcher pods of a
+// live-migrating VM — falling back to the pod's own identity when the pod
+// has no controlling owner.
 func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ranks map[int]int) error {
 	if c.opts.PodLister == nil {
 		return nil
@@ -136,10 +140,6 @@ func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ra
 	pods, err := c.opts.PodLister.Pods()
 	if err != nil {
 		return err
-	}
-	kind := c.opts.WorkloadKind
-	if kind == "" {
-		kind = "pod"
 	}
 	for _, pod := range pods {
 		if pod.NodeName != "" && pod.NodeName != c.opts.NodeName {
@@ -153,9 +153,9 @@ func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ra
 		if err != nil {
 			continue
 		}
-		workload := pod.WorkloadName
-		if workload == "" {
-			workload = pod.Name
+		workload, kind := pod.Name, "Pod"
+		if pod.OwnerName != "" {
+			workload, kind = pod.OwnerName, pod.OwnerKind
 		}
 		emit := func(row string, desc *prometheus.Desc) {
 			nodes, ok := stat[row]

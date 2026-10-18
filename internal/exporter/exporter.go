@@ -9,10 +9,13 @@
 //   - page demotion and promotion counters (/proc/vmstat),
 //   - memory pressure stall information (/proc/pressure/memory),
 //   - and, when running in a Kubernetes cluster, per-workload memory
-//     attribution by NUMA node (cgroup v2 memory.numa_stat of each
-//     workload pod's cgroup). The default configuration attributes KubeVirt
-//     virtual machines; any pod set can be attributed by configuring pod
-//     discovery.
+//     attribution by NUMA node (cgroup v2 memory.numa_stat of each pod's
+//     cgroup). Workloads are identified by their controlling owner
+//     (the VirtualMachineInstance for KubeVirt VMs, the StatefulSet or
+//     DaemonSet for controller-managed pods, the pod itself otherwise),
+//     so series aggregate by stable workload identity rather than by pod
+//     incarnation. Pod discovery is a plain label selector; by default
+//     every pod on the node is attributed.
 //
 // All metrics use the node_memory_tier_ prefix so they cannot be confused
 // with (or double-counted against) node_exporter's own collectors, none of
@@ -41,27 +44,28 @@ type Options struct {
 	// PodLister, when non-nil, enables per-workload attribution: it returns
 	// the pods backing attributed workloads.
 	PodLister PodLister
-
-	// WorkloadKind is the value of the workload_kind label on per-workload
-	// series. It should describe what the configured PodLister selects (the
-	// KubeVirt preset uses "vmi"). Empty defaults to "pod".
-	WorkloadKind string
 }
 
 // Pod is the minimal view of a Kubernetes pod the collector needs.
 type Pod struct {
-	Namespace    string
-	Name         string // pod name
-	UID          string // pod UID, used to locate the cgroup
-	QOSClass     string // Guaranteed | Burstable | BestEffort
-	WorkloadName string // workload name, from the configured name label
-	NodeName     string // node the pod is scheduled on
+	Namespace string
+	Name      string // pod name
+	UID       string // pod UID, used to locate the cgroup
+	QOSClass  string // Guaranteed | Burstable | BestEffort
+	NodeName  string // node the pod is scheduled on
+
+	// OwnerKind and OwnerName identify the pod's controlling owner
+	// (ownerReference with controller=true): the VirtualMachineInstance
+	// for KubeVirt launcher pods, the StatefulSet/DaemonSet/ReplicaSet/Job
+	// for controller-managed pods. Both are empty for ownerless pods, in
+	// which case the workload falls back to the pod's own identity.
+	OwnerKind string
+	OwnerName string
 }
 
 // PodLister returns the pods whose cgroups are attributed per workload.
-// Implementations typically list pods by a label selector and filter by
-// node; the KubeVirt preset lists kubevirt.io=virt-launcher pods and names
-// workloads with the vmi.kubevirt.io/id label.
+// Implementations typically list pods by a label selector (empty selects
+// all pods) and filter by node.
 type PodLister interface {
 	Pods() ([]Pod, error)
 }
