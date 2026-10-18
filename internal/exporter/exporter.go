@@ -112,6 +112,7 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- tierMemDesc(tierMemFree)
 	ch <- tierMemDesc(tierMemUsed)
 	ch <- tierAnonDesc
+	ch <- tierAnonTHPDesc
 	ch <- tierFileDesc
 	ch <- pgDemoteDesc
 	ch <- pgPromoteDesc

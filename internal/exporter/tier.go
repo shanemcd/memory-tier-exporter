@@ -154,8 +154,9 @@ type NodeMem struct {
 	Total int64
 	Free  int64
 	Used  int64
-	Anon  int64
+	Anon  int64 // AnonPages + AnonHugePages (THP anon is not in AnonPages)
 	File  int64
+	THP   int64
 }
 
 // ReadNodeMeminfo parses MemTotal, MemFree and MemUsed from
@@ -195,6 +196,9 @@ func ReadNodeMeminfo(sysfsRoot string, node int) (NodeMem, error) {
 			m.Anon = bytes
 		case "FilePages":
 			m.File = bytes
+		case "AnonHugePages":
+			m.THP = bytes
+			m.Anon += bytes
 		}
 	}
 	return m, sc.Err()
@@ -230,6 +234,12 @@ func tierMemDesc(kind tierMemKind) *prometheus.Desc {
 var tierAnonDesc = prometheus.NewDesc(
 	"node_memory_tier_anon_bytes",
 	"Anonymous memory on this NUMA node, labeled by memory tier (node meminfo AnonPages). Anonymous memory is what kernel tiering demotes and promotes; it approximates a workload's resident working set.",
+	tierMetricLabels, nil,
+)
+
+var tierAnonTHPDesc = prometheus.NewDesc(
+	"node_memory_tier_anon_thp_bytes",
+	"Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes; virtualization guests typically allocate their memory as THP.",
 	tierMetricLabels, nil,
 )
 
@@ -273,6 +283,7 @@ func (c *Collector) collectTiers(ch chan<- prometheus.Metric, tm TierMap, ranks 
 		ch <- prometheus.MustNewConstMetric(tierMemDesc(tierMemFree), prometheus.GaugeValue, float64(mem.Free), labels...)
 		ch <- prometheus.MustNewConstMetric(tierMemDesc(tierMemUsed), prometheus.GaugeValue, float64(mem.Used), labels...)
 		ch <- prometheus.MustNewConstMetric(tierAnonDesc, prometheus.GaugeValue, float64(mem.Anon), labels...)
+		ch <- prometheus.MustNewConstMetric(tierAnonTHPDesc, prometheus.GaugeValue, float64(mem.THP), labels...)
 		ch <- prometheus.MustNewConstMetric(tierFileDesc, prometheus.GaugeValue, float64(mem.File), labels...)
 	}
 	return nil

@@ -114,6 +114,10 @@ node_memory_tier_nodes{node="worker-test",numa_node="1",rank="1",tier="22"} 1
 # TYPE node_memory_tier_anon_bytes gauge
 node_memory_tier_anon_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 3.072e+09
 node_memory_tier_anon_bytes{node="worker-test",numa_node="1",rank="1",tier="22"} 1.1931648e+07
+# HELP node_memory_tier_anon_thp_bytes Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes; virtualization guests typically allocate their memory as THP.
+# TYPE node_memory_tier_anon_thp_bytes gauge
+node_memory_tier_anon_thp_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 2.048e+09
+node_memory_tier_anon_thp_bytes{node="worker-test",numa_node="1",rank="1",tier="22"} 0
 # HELP node_memory_tier_file_bytes File-backed page cache on this NUMA node, labeled by memory tier (node meminfo FilePages). This memory is reclaimable without tiering.
 # TYPE node_memory_tier_file_bytes gauge
 node_memory_tier_file_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 4.096e+09
