@@ -1,0 +1,150 @@
+# Deploys memory-tier-exporter as a DaemonSet and exposes it to the platform
+# Prometheus through a ServiceMonitor.
+#
+# The exporter needs:
+#   - read access to /sys and /proc of the node (hostPath, read-only)
+#   - read access to the cgroup filesystem (hostPath, read-only) for
+#     per-VM attribution
+#   - list access to pods cluster-wide (virt-launcher pods) for per-VM
+#     attribution
+#
+# Apply with: oc apply -f deploy/
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cxl-observability
+  # Selects this namespace's ServiceMonitors and PrometheusRules for the
+  # platform Prometheus on OpenShift (the cluster-monitoring label is the
+  # documented selection mechanism for platform monitoring).
+  labels:
+    openshift.io/cluster-monitoring: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: memory-tier-exporter
+  namespace: cxl-observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: memory-tier-exporter
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: memory-tier-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: memory-tier-exporter
+subjects:
+  - kind: ServiceAccount
+    name: memory-tier-exporter
+    namespace: cxl-observability
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: memory-tier-exporter
+  namespace: cxl-observability
+  labels:
+    app: memory-tier-exporter
+spec:
+  selector:
+    matchLabels:
+      app: memory-tier-exporter
+  template:
+    metadata:
+      labels:
+        app: memory-tier-exporter
+    spec:
+      serviceAccountName: memory-tier-exporter
+      # VM attribution requires cgroup access; sysfs/procfs reads are passive.
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: exporter
+          image: image-registry.openshift-image-registry.svc:5000/cxl-observability/memory-tier-exporter:latest
+          imagePullPolicy: Always
+          args:
+            - --node-name=$(NODE_NAME)
+            - --sysfs.root=/sys
+            - --procfs.root=/host/proc
+            - --cgroupfs.root=/host/sys/fs/cgroup
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - name: metrics
+              containerPort: 9102
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 5m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: true
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memory-tier-exporter
+  namespace: cxl-observability
+  labels:
+    app: memory-tier-exporter
+spec:
+  selector:
+    app: memory-tier-exporter
+  ports:
+    - name: metrics
+      port: 9102
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: memory-tier-exporter
+  namespace: cxl-observability
+  labels:
+    app: memory-tier-exporter
+spec:
+  selector:
+    matchLabels:
+      app: memory-tier-exporter
+  endpoints:
+    - port: metrics
+      interval: 30s
+      honorLabels: true

@@ -1,0 +1,7 @@
+anon N0=160829440 N1=4096
+file N0=598016 N1=0
+shmem N0=81920 N1=0
+kernel N0=4456448 N1=20544
+pgdemote_kswapd N0=0 N1=0
+pgdemote_direct N0=64 N1=0
+pgpromote_success N0=8 N1=0

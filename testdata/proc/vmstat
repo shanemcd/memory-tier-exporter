@@ -1,0 +1,7 @@
+pgpromote_success 17
+pgpromote_candidate 30
+pgpromote_candidate_nrl 12
+pgdemote_kswapd 0
+pgdemote_direct 194624
+pgdemote_khugepaged 0
+pgfault 123
