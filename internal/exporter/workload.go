@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 // workload and the Kubernetes pod whose cgroup is measured. The pod cgroup
 // includes every container in the pod, so for KubeVirt VMs the launcher
 // overhead (QEMU, libvirt process, sidecars) is included in these numbers.
+// Ordinary memcg rows exclude explicit HugeTLB guest RAM; owner labels
+// identify the pod owner, not a complete guest-memory measurement.
 var workloadMetricLabels = []string{"node", "workload", "workload_kind", "namespace", "pod", "numa_node", "tier", "rank"}
 
 type workloadMemKind int
@@ -39,7 +42,7 @@ func (k workloadMemKind) name() string {
 func workloadMemDesc(kind workloadMemKind) *prometheus.Desc {
 	return prometheus.NewDesc(
 		"node_memory_tier_workload_"+kind.name()+"_bytes",
-		fmt.Sprintf("%s memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).", kind.name()),
+		fmt.Sprintf("%s memory of the workload's pod cgroup on this NUMA node (ordinary cgroup v2 memory.numa_stat; includes all containers, excludes explicit HugeTLB guest RAM; shmem is a subset of file, not additive).", kind.name()),
 		workloadMetricLabels, nil,
 	)
 }
@@ -58,7 +61,8 @@ var workloadPgPromoteDesc = prometheus.NewDesc(
 	nil,
 )
 
-// NumaStat is a parsed cgroup v2 memory.numa_stat: row name -> NUMA node -> bytes.
+// NumaStat is a parsed cgroup v2 memory.numa_stat: row name -> NUMA node
+// -> value. Memory rows use bytes; movement rows use page counts.
 type NumaStat map[string]map[int]int64
 
 // ParseNumaStat parses cgroup v2 memory.numa_stat content, e.g.
@@ -99,7 +103,13 @@ func ReadNumaStat(cgroupDir string) (NumaStat, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ParseNumaStat(string(data)), nil
+	stat := ParseNumaStat(string(data))
+	for _, row := range []string{"anon", "file", "shmem"} {
+		if len(stat[row]) == 0 {
+			return nil, fmt.Errorf("memory.numa_stat missing valid %s row", row)
+		}
+	}
+	return stat, nil
 }
 
 // podCgroupPath returns the cgroup v2 directory of a pod's cgroup, given the
@@ -109,21 +119,30 @@ func ReadNumaStat(cgroupDir string) (NumaStat, error) {
 //	/sys/fs/cgroup/kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<podUID escaped>.slice
 //
 // where dashes in the UID are escaped to underscores by systemd slice
-// naming. The non-systemd layout (kubepods/pod<uid>) is also probed.
-func podCgroupPath(cgroupfsRoot, uid, qosClass string) string {
+// naming. The cgroupfs layout is also probed: kubepods/pod<uid> for
+// Guaranteed, kubepods/{burstable,besteffort}/pod<uid> otherwise.
+func podCgroupPath(cgroupfsRoot, uid, qosClass string) (string, error) {
 	esc := strings.ReplaceAll(uid, "-", "_")
 	qos := strings.ToLower(qosClass)
 	candidates := []string{
 		filepath.Join(cgroupfsRoot, "kubepods.slice", "kubepods-"+qos+".slice", "kubepods-"+qos+"-pod"+esc+".slice"),
 		filepath.Join(cgroupfsRoot, "kubepods.slice", "kubepods-pod"+esc+".slice"),
+		filepath.Join(cgroupfsRoot, "kubepods", qos, "pod"+uid),
 		filepath.Join(cgroupfsRoot, "kubepods", "pod"+uid),
 	}
 	for _, p := range candidates {
-		if fi, err := os.Stat(filepath.Join(p, "memory.numa_stat")); err == nil && !fi.IsDir() {
-			return p
+		fi, err := os.Stat(p)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return "", err
+			}
+			continue
+		}
+		if fi.IsDir() {
+			return p, nil
 		}
 	}
-	return ""
+	return "", os.ErrNotExist
 }
 
 // collectWorkloads attributes per-workload memory by NUMA node for
@@ -134,6 +153,8 @@ func podCgroupPath(cgroupfsRoot, uid, qosClass string) string {
 // live-migrating VM — falling back to the pod's own identity when the pod
 // has no controlling owner.
 func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ranks map[int]int) error {
+	counts := workloadCounts{skipped: map[string]int{}}
+	defer counts.emit(ch, c.opts.NodeName)
 	if c.opts.PodLister == nil {
 		return nil
 	}
@@ -141,21 +162,40 @@ func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ra
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, pod := range pods {
 		if pod.NodeName != "" && pod.NodeName != c.opts.NodeName {
 			continue
 		}
-		cg := podCgroupPath(c.opts.CgroupfsRoot, pod.UID, pod.QOSClass)
-		if cg == "" {
+		counts.discovered++
+		cg, err := podCgroupPath(c.opts.CgroupfsRoot, pod.UID, pod.QOSClass)
+		if err != nil {
+			reason := "read_error"
+			if os.IsNotExist(err) {
+				reason = "not_found"
+			}
+			counts.skipped[reason]++
+			errs = append(errs, err)
 			continue
 		}
 		stat, err := ReadNumaStat(cg)
 		if err != nil {
+			reason := "read_error"
+			if os.IsNotExist(err) {
+				reason = "disappeared"
+			}
+			counts.skipped[reason]++
+			errs = append(errs, err)
 			continue
 		}
+		counts.read++
 		workload, kind := pod.Name, "Pod"
 		if pod.OwnerName != "" {
 			workload, kind = pod.OwnerName, pod.OwnerKind
+		}
+		identity := []string{c.opts.NodeName, workload, kind, pod.Namespace, pod.Name}
+		if err := c.collectHugetlb(ch, cg, identity, tm, ranks); err != nil {
+			errs = append(errs, err)
 		}
 		emit := func(row string, desc *prometheus.Desc) {
 			nodes, ok := stat[row]
@@ -198,5 +238,5 @@ func (c *Collector) collectWorkloads(ch chan<- prometheus.Metric, tm TierMap, ra
 			}
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }

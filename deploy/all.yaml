@@ -6,7 +6,7 @@
 #   - read access to the cgroup filesystem (hostPath, read-only) for
 #     per-workload attribution
 #   - list access to pods (label-selected workload pods; defaults to
-#     KubeVirt launcher pods) for per-workload attribution
+#     every pod on the node) for per-workload attribution
 #
 # Apply with: oc apply -f deploy/
 ---
@@ -168,4 +168,5 @@ spec:
   endpoints:
     - port: metrics
       interval: 30s
+      scrapeTimeout: 30s
       honorLabels: true

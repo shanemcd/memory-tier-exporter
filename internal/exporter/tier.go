@@ -52,20 +52,26 @@ func ReadTierMap(sysfsRoot string) (TierMap, error) {
 			continue
 		}
 		tier, err := strconv.Atoi(strings.TrimPrefix(name, "memory_tier"))
-		if err != nil {
-			continue
+		if err != nil || tier < 0 {
+			return nil, fmt.Errorf("invalid tier directory %q", name)
 		}
 		data, err := os.ReadFile(filepath.Join(base, name, "nodelist"))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read %s nodelist: %w", name, err)
 		}
 		nodes, err := parseRangeList(strings.TrimSpace(string(data)))
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("parse %s nodelist: %w", name, err)
 		}
 		for _, n := range nodes {
+			if _, exists := tm[n]; exists {
+				return nil, fmt.Errorf("duplicate tier membership for node %d", n)
+			}
 			tm[n] = tier
 		}
+	}
+	if len(tm) == 0 {
+		return nil, fmt.Errorf("memory-tier interface exists but has no nodes")
 	}
 	return tm, nil
 }
@@ -106,7 +112,7 @@ func parseRangeList(s string) ([]int, error) {
 			bounds := strings.SplitN(part, "-", 2)
 			lo, err1 := strconv.Atoi(bounds[0])
 			hi, err2 := strconv.Atoi(bounds[1])
-			if err1 != nil || err2 != nil {
+			if err1 != nil || err2 != nil || lo < 0 || hi < lo {
 				return nil, fmt.Errorf("bad range %q", part)
 			}
 			for i := lo; i <= hi; i++ {
@@ -115,7 +121,7 @@ func parseRangeList(s string) ([]int, error) {
 			continue
 		}
 		v, err := strconv.Atoi(part)
-		if err != nil {
+		if err != nil || v < 0 {
 			return nil, fmt.Errorf("bad value %q", part)
 		}
 		out = append(out, v)
@@ -123,11 +129,27 @@ func parseRangeList(s string) ([]int, error) {
 	return out, nil
 }
 
-// listNUMANodes returns the NUMA node ids present in sysfs.
+// listNUMANodes returns the memory-bearing NUMA node ids present in sysfs.
 func listNUMANodes(sysfsRoot string) ([]int, error) {
 	base := filepath.Join(sysfsRoot, "devices", "system", "node")
 	entries, err := os.ReadDir(base)
 	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(base, "has_memory"))
+	var memoryNodes map[int]bool
+	if err == nil {
+		memoryNodes = map[int]bool{}
+		if list := strings.TrimSpace(string(data)); list != "" {
+			nodes, err := parseRangeList(list)
+			if err != nil {
+				return nil, fmt.Errorf("parse has_memory: %w", err)
+			}
+			for _, n := range nodes {
+				memoryNodes[n] = true
+			}
+		}
+	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	var nodes []int
@@ -139,6 +161,21 @@ func listNUMANodes(sysfsRoot string) ([]int, error) {
 		n, err := strconv.Atoi(strings.TrimPrefix(name, "node"))
 		if err != nil {
 			continue
+		}
+		if memoryNodes != nil {
+			if !memoryNodes[n] {
+				continue
+			}
+		} else {
+			// Older kernels may not expose has_memory. CPU-only nodes
+			// have zero MemTotal and need no memory-tier membership.
+			mem, err := ReadNodeMeminfo(sysfsRoot, n)
+			if err != nil {
+				return nil, err
+			}
+			if mem.Total == 0 {
+				continue
+			}
 		}
 		nodes = append(nodes, n)
 	}
@@ -154,7 +191,7 @@ type NodeMem struct {
 	Total int64
 	Free  int64
 	Used  int64
-	Anon  int64 // AnonPages + AnonHugePages (THP anon is not in AnonPages)
+	Anon  int64 // AnonPages already includes anonymous THP on Linux 6.12.
 	File  int64
 	THP   int64
 }
@@ -198,7 +235,6 @@ func ReadNodeMeminfo(sysfsRoot string, node int) (NodeMem, error) {
 			m.File = bytes
 		case "AnonHugePages":
 			m.THP = bytes
-			m.Anon += bytes
 		}
 	}
 	return m, sc.Err()
@@ -239,13 +275,13 @@ var tierAnonDesc = prometheus.NewDesc(
 
 var tierAnonTHPDesc = prometheus.NewDesc(
 	"node_memory_tier_anon_thp_bytes",
-	"Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes; virtualization guests typically allocate their memory as THP.",
+	"Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes, not additive; excludes explicit HugeTLB guest RAM.",
 	tierMetricLabels, nil,
 )
 
 var tierFileDesc = prometheus.NewDesc(
 	"node_memory_tier_file_bytes",
-	"File-backed page cache on this NUMA node, labeled by memory tier (node meminfo FilePages). This memory is reclaimable without tiering.",
+	"File-backed page cache on this NUMA node, labeled by memory tier (node meminfo FilePages). Includes shmem/tmpfs and dirty or mapped pages; not all of it is immediately discardable.",
 	tierMetricLabels, nil,
 )
 
@@ -256,7 +292,11 @@ func (c *Collector) nodeTierInfo(tm TierMap, ranks map[int]int, n int) (tier, ra
 	if t, ok := tm[n]; ok {
 		return t, ranks[n]
 	}
-	return 0, 0
+	if tm == nil {
+		return 0, 0
+	}
+	// An unclassified node must never appear to be the fastest tier.
+	return -1, -1
 }
 
 // collectTiers emits the tier mapping and per-NUMA-node memory metrics.
@@ -264,6 +304,14 @@ func (c *Collector) collectTiers(ch chan<- prometheus.Metric, tm TierMap, ranks 
 	nodes, err := listNUMANodes(c.opts.SysfsRoot)
 	if err != nil {
 		return err
+	}
+	// Validate the complete discovery before emitting any tier membership.
+	if tm != nil {
+		for _, n := range nodes {
+			if _, ok := tm[n]; !ok {
+				return fmt.Errorf("NUMA node %d missing from memory-tier interface", n)
+			}
+		}
 	}
 	for _, n := range nodes {
 		tier, rank := c.nodeTierInfo(tm, ranks, n)

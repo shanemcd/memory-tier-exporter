@@ -3,6 +3,7 @@ package kube
 import (
 	"context"
 	"fmt"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -16,6 +17,9 @@ import (
 // selector attributes every pod on the node. Restrict it (for example to
 // kubevirt.io=virt-launcher) to attribute only a subset of pods.
 const DefaultPodLabelSelector = ""
+
+// PodListTimeout bounds API listing well below the 30-second scrape budget.
+const PodListTimeout = 5 * time.Second
 
 // PodLister lists the pods whose cgroups are attributed per workload.
 // LabelSelector selects the pods (empty: all pods); NodeName, when set,
@@ -42,18 +46,24 @@ func NewInClusterPodLister(labelSelector, nodeName string) (*PodLister, error) {
 
 // Pods implements exporter.PodLister.
 func (p *PodLister) Pods() ([]exporter.Pod, error) {
+	return p.podsWithTimeout(PodListTimeout)
+}
+
+func (p *PodLister) podsWithTimeout(timeout time.Duration) ([]exporter.Pod, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	opts := metav1.ListOptions{LabelSelector: p.LabelSelector}
 	if p.NodeName != "" {
 		opts.FieldSelector = "spec.nodeName=" + p.NodeName
 	}
-	pods, err := p.Client.CoreV1().Pods("").List(context.Background(), opts)
+	pods, err := p.Client.CoreV1().Pods("").List(ctx, opts)
 	if err != nil {
 		return nil, fmt.Errorf("listing workload pods: %w", err)
 	}
 	out := make([]exporter.Pod, 0, len(pods.Items))
 	for i := range pods.Items {
 		pod := &pods.Items[i]
-		if pod.Spec.NodeName == "" {
+		if pod.Spec.NodeName == "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
 		ep := exporter.Pod{
@@ -62,6 +72,11 @@ func (p *PodLister) Pods() ([]exporter.Pod, error) {
 			UID:       string(pod.UID),
 			QOSClass:  string(pod.Status.QOSClass),
 			NodeName:  pod.Spec.NodeName,
+		}
+		// Mirror pods have an API UID different from the static pod UID used
+		// by kubelet for the cgroup. The mirror annotation carries that UID.
+		if uid := pod.Annotations["kubernetes.io/config.mirror"]; uid != "" {
+			ep.UID = uid
 		}
 		if owner := controllingOwner(pod); owner != nil {
 			ep.OwnerKind, ep.OwnerName = owner.Kind, owner.Name

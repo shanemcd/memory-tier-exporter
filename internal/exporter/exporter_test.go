@@ -124,13 +124,13 @@ node_memory_tier_nodes{node="worker-test",numa_node="0",rank="0",tier="4"} 1
 node_memory_tier_nodes{node="worker-test",numa_node="1",rank="1",tier="22"} 1
 # HELP node_memory_tier_anon_bytes Anonymous memory on this NUMA node, labeled by memory tier (node meminfo AnonPages). Anonymous memory is what kernel tiering demotes and promotes; it approximates a workload's resident working set.
 # TYPE node_memory_tier_anon_bytes gauge
-node_memory_tier_anon_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 3.072e+09
+node_memory_tier_anon_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 3.221225472e+09
 node_memory_tier_anon_bytes{node="worker-test",numa_node="1",rank="1",tier="22"} 1.1931648e+07
-# HELP node_memory_tier_anon_thp_bytes Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes; virtualization guests typically allocate their memory as THP.
+# HELP node_memory_tier_anon_thp_bytes Anonymous transparent-hugepage memory on this NUMA node, labeled by memory tier (node meminfo AnonHugePages). Included in anon_bytes, not additive; excludes explicit HugeTLB guest RAM.
 # TYPE node_memory_tier_anon_thp_bytes gauge
-node_memory_tier_anon_thp_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 2.048e+09
+node_memory_tier_anon_thp_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 2.147483648e+09
 node_memory_tier_anon_thp_bytes{node="worker-test",numa_node="1",rank="1",tier="22"} 0
-# HELP node_memory_tier_file_bytes File-backed page cache on this NUMA node, labeled by memory tier (node meminfo FilePages). This memory is reclaimable without tiering.
+# HELP node_memory_tier_file_bytes File-backed page cache on this NUMA node, labeled by memory tier (node meminfo FilePages). Includes shmem/tmpfs and dirty or mapped pages; not all of it is immediately discardable.
 # TYPE node_memory_tier_file_bytes gauge
 node_memory_tier_file_bytes{node="worker-test",numa_node="0",rank="0",tier="4"} 4.096e+09
 node_memory_tier_file_bytes{node="worker-test",numa_node="1",rank="1",tier="22"} 0
@@ -168,7 +168,7 @@ node_memory_tier_psi_stalled_ratio{node="worker-test",scope="full",window="60"} 
 node_memory_tier_psi_stalled_ratio{node="worker-test",scope="some",window="10"} 0
 node_memory_tier_psi_stalled_ratio{node="worker-test",scope="some",window="300"} 0.0001
 node_memory_tier_psi_stalled_ratio{node="worker-test",scope="some",window="60"} 0.0003
-# HELP node_memory_tier_workload_anon_bytes anon memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
+# HELP node_memory_tier_workload_anon_bytes anon memory of the workload's pod cgroup on this NUMA node (ordinary cgroup v2 memory.numa_stat; includes all containers, excludes explicit HugeTLB guest RAM; shmem is a subset of file, not additive).
 # TYPE node_memory_tier_workload_anon_bytes gauge
 node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 1.6082944e+08
 node_memory_tier_workload_anon_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 1.6082944e+08
@@ -190,13 +190,13 @@ node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",nod
 node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 8
 node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
 node_memory_tier_workload_pgpromote_total{mode="success",namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
-# HELP node_memory_tier_workload_file_bytes file memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
+# HELP node_memory_tier_workload_file_bytes file memory of the workload's pod cgroup on this NUMA node (ordinary cgroup v2 memory.numa_stat; includes all containers, excludes explicit HugeTLB guest RAM; shmem is a subset of file, not additive).
 # TYPE node_memory_tier_workload_file_bytes gauge
 node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 598016
 node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 598016
 node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="1",pod="standalone-7d9f",rank="1",tier="22",workload="standalone-7d9f",workload_kind="Pod"} 0
 node_memory_tier_workload_file_bytes{namespace="default",node="worker-test",numa_node="1",pod="virt-launcher-demo-abcde",rank="1",tier="22",workload="demo",workload_kind="VirtualMachineInstance"} 0
-# HELP node_memory_tier_workload_shmem_bytes shmem memory of the workload's pod cgroup on this NUMA node (cgroup v2 memory.numa_stat; includes all containers in the pod).
+# HELP node_memory_tier_workload_shmem_bytes shmem memory of the workload's pod cgroup on this NUMA node (ordinary cgroup v2 memory.numa_stat; includes all containers, excludes explicit HugeTLB guest RAM; shmem is a subset of file, not additive).
 # TYPE node_memory_tier_workload_shmem_bytes gauge
 node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="0",pod="standalone-7d9f",rank="0",tier="4",workload="standalone-7d9f",workload_kind="Pod"} 81920
 node_memory_tier_workload_shmem_bytes{namespace="default",node="worker-test",numa_node="0",pod="virt-launcher-demo-abcde",rank="0",tier="4",workload="demo",workload_kind="VirtualMachineInstance"} 81920
@@ -231,7 +231,10 @@ func (d dropScrapeMetrics) Gather() ([]*dto.MetricFamily, error) {
 	}
 	out := mfs[:0]
 	for _, mf := range mfs {
-		if strings.HasPrefix(mf.GetName(), "node_memory_tier_scrape") {
+		if strings.HasPrefix(mf.GetName(), "node_memory_tier_scrape") ||
+			strings.HasPrefix(mf.GetName(), "node_memory_tier_workload_pods_") ||
+			strings.HasPrefix(mf.GetName(), "node_memory_tier_workload_hugetlb_") ||
+			mf.GetName() == "node_memory_tier_workload_attribution_error" {
 			continue
 		}
 		out = append(out, mf)

@@ -1,43 +1,38 @@
 package exporter
 
 import (
-	"time"
+	"errors"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// collect runs one full scrape. Individual source failures mark the scrape
-// failed but partial metrics may still have been emitted.
+// collect runs independent sources even when one fails. Workload failures have
+// their own health gauge and do not invalidate otherwise valid node metrics.
 func (c *Collector) collect(ch chan<- prometheus.Metric) error {
-	tm, err := ReadTierMap(c.opts.SysfsRoot)
-	if err != nil {
-		return err
-	}
+	tm, topologyErr := ReadTierMap(c.opts.SysfsRoot)
 	ranks := tm.Ranks()
-
-	if err := c.collectTiers(ch, tm, ranks); err != nil {
-		return err
+	if topologyErr == nil {
+		topologyErr = c.collectTiers(ch, tm, ranks)
 	}
-	if err := c.collectMovement(ch); err != nil {
-		return err
+	movementErr := c.collectMovement(ch)
+	psiErr := c.collectPSI(ch)
+	var attributionErr error
+	if topologyErr == nil {
+		attributionErr = c.collectWorkloads(ch, tm, ranks)
+	} else {
+		// Placement would be misleading with incomplete topology.
+		counts := workloadCounts{}
+		counts.emit(ch, c.opts.NodeName)
+		if c.opts.PodLister != nil {
+			attributionErr = topologyErr
+		}
 	}
-	if err := c.collectPSI(ch); err != nil {
-		return err
-	}
-	// Workload attribution failures do not fail the whole scrape: node-level
-	// tier metrics are still valid, and a Kubernetes API hiccup should not
-	// blank the node's tier visibility.
-	if err := c.collectWorkloads(ch, tm, ranks); err != nil {
-		ch <- prometheus.MustNewConstMetric(workloadAttributionErrorsDesc, prometheus.CounterValue, 1, c.opts.NodeName)
-	}
-	return nil
+	ch <- prometheus.MustNewConstMetric(workloadAttributionErrorsDesc, prometheus.GaugeValue, btoi(attributionErr != nil), c.opts.NodeName)
+	return errors.Join(topologyErr, movementErr, psiErr)
 }
 
 var workloadAttributionErrorsDesc = prometheus.NewDesc(
 	"node_memory_tier_workload_attribution_error",
-	"1 if the last per-workload attribution pass failed (node-level tier metrics remain valid).",
+	"Whether the last workload attribution pass failed or skipped pods (1) or succeeded/was disabled (0); node metrics can remain valid. HugeTLB interface absence is reported by its availability gauge, not an error.",
 	[]string{"node"}, nil,
 )
-
-// Timestamp is used by tests to bound collection time.
-var now = time.Now

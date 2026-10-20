@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
@@ -71,7 +72,7 @@ func main() {
 		versioncollector.NewCollector("memory_tier_exporter"),
 	)
 
-	http.Handle(*metricsPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	http.Handle(*metricsPath, metricsHandler(reg))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<html><head><title>memory-tier-exporter</title></head>
 <body><h1>memory-tier-exporter</h1><p><a href="%s">Metrics</a></p></body></html>`,
@@ -85,8 +86,25 @@ func main() {
 		<-sig
 		os.Exit(0)
 	}()
-	if err := http.ListenAndServe(*listenAddress, nil); err != nil {
+	server := newHTTPServer(*listenAddress, nil)
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("listen: %v", err)
+	}
+}
+
+// Admit one scrape at a time. Unlike a handler timeout, this keeps the
+// collector concurrency bounded until collection actually finishes.
+func metricsHandler(g prometheus.Gatherer) http.Handler {
+	return promhttp.HandlerFor(g, promhttp.HandlerOpts{MaxRequestsInFlight: 1})
+}
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      25 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 

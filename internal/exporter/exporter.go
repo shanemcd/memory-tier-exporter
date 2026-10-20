@@ -137,6 +137,11 @@ func (c *Collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- workloadPgDemoteDesc
 	ch <- workloadPgPromoteDesc
 	ch <- workloadAttributionErrorsDesc
+	ch <- workloadDiscoveredDesc
+	ch <- workloadReadDesc
+	ch <- workloadSkippedDesc
+	ch <- workloadHugetlbDesc
+	ch <- workloadHugetlbAvailableDesc
 }
 
 // Collect implements prometheus.Collector.
@@ -145,12 +150,12 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	err := c.collect(ch)
 	c.scrapeDuration.Set(time.Since(begin).Seconds())
 	c.scrapeSuccess.Set(btoi(err == nil))
-	c.scrapeDuration.Collect(ch)
-	c.scrapeSuccess.Collect(ch)
-	c.scrapeErrors.Collect(ch)
 	if err != nil {
 		c.scrapeErrors.Inc()
 	}
+	c.scrapeDuration.Collect(ch)
+	c.scrapeSuccess.Collect(ch)
+	c.scrapeErrors.Collect(ch)
 }
 
 func btoi(b bool) float64 {
