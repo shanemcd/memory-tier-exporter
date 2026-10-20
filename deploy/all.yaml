@@ -48,6 +48,22 @@ subjects:
     name: memory-tier-exporter
     namespace: cxl-observability
 ---
+# The exporter mounts hostPath volumes (/sys, /proc, cgroupfs); on
+# OpenShift this requires the hostmount-anyuid SCC for its SA.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: memory-tier-exporter-scc
+  namespace: cxl-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:hostmount-anyuid
+subjects:
+- kind: ServiceAccount
+  name: memory-tier-exporter
+  namespace: cxl-observability
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
